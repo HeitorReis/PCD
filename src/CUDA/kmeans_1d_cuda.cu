@@ -13,8 +13,11 @@
 //   ./kmeans_1d_cuda dados.csv centroides_iniciais.csv [max_iter=50] [eps=1e-6]
 //                     [assign.csv] [centroids.csv] [sse.csv]
 //
+// Compilação sugerida (RTX 2060, CC 7.5):
 //   nvcc -O2 -arch=sm_75 -DBLOCK_SIZE=256 kmeans_1d_cuda.cu -o kmeans_1d_cuda
 //
+// OBS: Mantido em double para compatibilidade numérica com a versão sequencial.
+//      Para ainda mais desempenho em GPUs gamer, pode-se migrar para float.
 
 #include <cuda_runtime.h>
 #include <cstdio>
@@ -46,6 +49,44 @@
 __constant__ double dC_const[MAX_CONST_K];
 
 // -------------------- kernels --------------------
+
+// Versão especializada do kernel com K conhecido em tempo de compilação
+// (usado para desenrolar o laço sobre os centróides para K=4,8,16).
+template<int KFIX>
+__global__
+void assign_accumulate_fixedK(const double* __restrict__ X,
+                              const double* __restrict__ C,
+                              int* __restrict__ assign,
+                              double* __restrict__ sum,
+                              int* __restrict__ cnt,
+                              double* __restrict__ sse,
+                              int N, int use_constC)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if(i >= N) return;
+
+    double xi = X[i];
+    int best = -1;
+    double bestd = 1e300;
+
+    // Varre todos os K centróides (K conhecido => laço totalmente desenrolável)
+    #pragma unroll
+    for(int c = 0; c < KFIX; ++c){
+        double cc = use_constC ? dC_const[c] : C[c];
+        double diff = xi - cc;
+        double d = diff * diff;
+        if(d < bestd){ bestd = d; best = c; }
+    }
+
+    assign[i] = best;
+
+    // Acumula soma e contagem para o cluster escolhido
+    atomicAdd(&sum[best], xi);
+    atomicAdd(&cnt[best], 1);
+
+    // Acumula SSE global
+    atomicAdd(sse, bestd);
+}
 
 // Kernel único: assignment + acumulação de somas/contagens + SSE.
 // 1 thread por ponto i.
@@ -249,9 +290,23 @@ static void kmeans_1d_cuda(const double *hX, double *hC, int *hAssign,
         CUDA_CHECK(cudaMemset(dSSE, 0, sizeof(double)));
 
         // Assignment + acumulação + SSE em um único kernel
-        assign_accumulate<<<gridPts, block>>>(dX, dC, dAssign,
-                                              dSum, dCnt, dSSE,
-                                              N, K, use_constC);
+        if (K == 4) {
+            assign_accumulate_fixedK<4><<<gridPts, block>>>(dX, dC, dAssign,
+                                                            dSum, dCnt, dSSE,
+                                                            N, use_constC);
+        } else if (K == 8) {
+            assign_accumulate_fixedK<8><<<gridPts, block>>>(dX, dC, dAssign,
+                                                            dSum, dCnt, dSSE,
+                                                            N, use_constC);
+        } else if (K == 16) {
+            assign_accumulate_fixedK<16><<<gridPts, block>>>(dX, dC, dAssign,
+                                                             dSum, dCnt, dSSE,
+                                                             N, use_constC);
+        } else {
+            assign_accumulate<<<gridPts, block>>>(dX, dC, dAssign,
+                                                  dSum, dCnt, dSSE,
+                                                  N, K, use_constC);
+        }
         CUDA_CHECK(cudaGetLastError());
 
         // Copia SSE escalar para o host
@@ -363,4 +418,5 @@ int main(int argc, char **argv){
     free(assign); free(X); free(C); free(sse_history);
     return 0;
 }
+
 
