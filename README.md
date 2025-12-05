@@ -1,6 +1,6 @@
-# Análise de Desempenho do K-Means 1D com OpenMP
+# Análise de Desempenho do K-Means 1D com OpenMP e CUDA
 
-Este projeto consiste na implementação e análise de desempenho de um algoritmo K-Means unidimensional. Ele compara uma versão sequencial "ingênua" com uma versão paralela otimizada com OpenMP.
+Este projeto consiste na implementação e análise de desempenho de um algoritmo K-Means unidimensional. Ele compara uma versão sequencial "ingênua" com uma versão paralela otimizada com OpenMP e com uma versão em CUDA para paralelização em GPU.
 
 O projeto inclui:
 *   Código-fonte em C para as versões sequencial e paralela do K-Means.
@@ -19,9 +19,10 @@ O repositório está organizado da seguinte forma:
 *   `src/`: Contém o código-fonte em C do algoritmo K-Means.
     *   `Original/`: Implementação sequencial (`kmeans_1d_naive.c`).
     *   `OpenMP/`: Implementação paralela com OpenMP (`kmeans_1d_omp.c`).
+    *   `CUDA/`: Implementação paralela com CUDA (`kmeans_1d_cuda.cu`).
 
 *   `Resultados/`: Diretório onde todos os artefatos de saída são salvos.
-    *   `Original/` e `OpenMP/`: Resultados brutos de cada execução (atribuições, centróides, SSE).
+    *   `Original/`, `OpenMP/` e `CUDA/`: Resultados brutos de cada execução (atribuições, centróides, SSE).
     *   `Graficos/`: Gráficos de tempo de execução e speedup gerados pelo `graficos.py`.
     *   `sequencial.csv` e `resultados.csv`: Arquivos com as métricas de desempenho consolidadas.
 
@@ -36,6 +37,7 @@ O repositório está organizado da seguinte forma:
 Antes de executar, certifique-se de que você tem os seguintes softwares instalados:
 
 *   **GCC**: Compilador C com suporte a OpenMP.
+*   **cuda_toolkit**: Contem o compilador nvcc para CUDA
 *   **Python 3**: Para os scripts de geração de dados e gráficos.
 *   **Bibliotecas Python**: `pandas`, `numpy`, `matplotlib`.
     ```bash
@@ -59,10 +61,11 @@ Este comando criará os arquivos `dados.csv` e `centroides_iniciais.csv` dentro 
 ### 2. Executar o Script de Benchmark
 
 O script `script.sh` automatiza todo o fluxo de trabalho. Ele irá:
-1.  Compilar as versões sequencial e OpenMP do código C.
+1.  Compilar as versões sequencial, OpenMP e CUDA do código C.
 2.  Executar a versão sequencial 10 vezes para cada dataset para obter uma média de tempo de base.
 3.  Executar a versão OpenMP 5 vezes para cada dataset, variando o número de threads (de 1 a 44).
-4.  Gerar os gráficos de desempenho e validação a partir dos resultados.
+4.  Executar a versão CUDA 10 vezes para cada dataset, variando o BLOCK SIZE (126, 256 e 512)
+5.  Gerar os gráficos de desempenho e validação a partir dos resultados.
 
 Para executar o script, dê permissão de execução e rode-o:
 
@@ -77,4 +80,4 @@ Após a conclusão do script, os resultados estarão organizados da seguinte for
 *   **`Resultados/sequencial.csv`**: Métricas agregadas das execuções sequenciais.
 *   **`Resultados/resultados.csv`**: Métricas agregadas das execuções paralelas com OpenMP.
 *   **`Resultados/Graficos/`**: Pasta contendo todos os gráficos gerados, como "Tempo vs Threads" e "Speedup vs Threads".
-*   **`Resultados/Original/`** e **`Resultados/OpenMP/`**: Pastas com os resultados brutos de cada execução individual (atribuições, centróides e SSE por iteração).
+*   **`Resultados/Original/`**, **`Resultados/OpenMP/`** e **`Resultados/CUDA/`**: Pastas com os resultados brutos de cada execução individual (atribuições, centróides e SSE por iteração).
