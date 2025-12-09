@@ -4,6 +4,7 @@
 rm -f Resultados/sequencial.csv
 rm -f Resultados/resultados.csv
 rm -f Resultados/cuda.csv
+rm -f Resultados/mpi.csv   # [MPI] limpa CSV agregado do MPI, se existir
 
 # Compilação Serial
 echo "======================================"
@@ -17,7 +18,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo "✓ Compilação bem-sucedida!"
+echo "✓ Compilação (Serial) bem-sucedida!"
 echo ""
 
 # Cria diretórios de resultados
@@ -28,7 +29,7 @@ MAX_ITER=500
 EPS=1e-4
 REPETICOES=10
 
-# Tamanhos conhecidos dos datasets
+# Tamanhos conhecidos dos datasets (para referência)
 N_PEQUENO=10000
 N_MEDIO=100000
 N_GRANDE=1000000
@@ -99,11 +100,11 @@ echo "======================================"
 gcc -O2 -std=c99 src/OpenMP/kmeans_1d_omp.c -o src/OpenMP/kmeans_1d_omp -lm -fopenmp
 
 if [ $? -ne 0 ]; then
-    echo "Erro na compilação!"
+    echo "Erro na compilação (OpenMP)!"
     exit 1
 fi
 
-echo "✓ Compilação bem-sucedida!"
+echo "✓ Compilação (OpenMP) bem-sucedida!"
 echo ""
 
 # Cria diretórios de resultados
@@ -122,7 +123,7 @@ echo ""
 # Loop por número de threads
 for NUM_THREADS in "${THREADS[@]}"; do
     echo "╔════════════════════════════════════════╗"
-    echo "║ Testando com $NUM_THREADS thread(s)"
+    echo "║ Testando OpenMP com $NUM_THREADS thread(s)"
     echo "╚════════════════════════════════════════╝"
     echo ""
 
@@ -142,7 +143,7 @@ for NUM_THREADS in "${THREADS[@]}"; do
             $MAX_ITER $EPS \
             Resultados/OpenMP/assign_pequeno_t${NUM_THREADS}_r${REP}.csv \
             Resultados/OpenMP/centroids_pequeno_t${NUM_THREADS}_r${REP}.csv \
-            Resultados/OpenMP/sse_pequeno_t${NUM_THREADS}_r${REP}.csv \
+            Resultados/OpenMP/sse_pequeno_t${NUM_THREADS}_r${REP}.csv
 
         # Dataset MÉDIO (N=10^5, K=8)
         echo " • MÉDIO (N=100,000, K=8)"
@@ -180,6 +181,104 @@ echo "Resultados salvos em: Resultados/OpenMP/"
 echo ""
 
 ###############################################################################
+#                               BLOCO MPI                                     #
+###############################################################################
+
+echo "======================================"
+echo "Compilando kmeans_1d_mpi..."
+echo "======================================"
+echo ""
+
+# [MPI] Ajuste o caminho abaixo conforme onde o seu código MPI foi salvo
+mpicc -O2 -std=c99 src/MPI/kmeans_1d_mpi.c -o src/MPI/kmeans_1d_mpi -lm
+
+if [ $? -ne 0 ]; then
+    echo "Erro na compilação (MPI)!"
+    exit 1
+fi
+
+echo "✓ Compilação (MPI) bem-sucedida!"
+echo ""
+
+# [MPI] Diretório de resultados MPI
+rm -rf Resultados/MPI
+mkdir -p Resultados/MPI
+
+# [MPI] Conjunto de números de processos a testar
+MPI_PROCS=(1 2 4 6 8 10 12 16 18 20 28 36 44)
+
+echo "======================================"
+echo "Executando K-means MPI"
+echo "Repetições: $REPETICOES por configuração"
+echo "======================================"
+echo ""
+
+for NP in "${MPI_PROCS[@]}"; do
+    echo "╔════════════════════════════════════════╗"
+    echo "║ Testando MPI com $NP processo(s)"
+    echo "╚════════════════════════════════════════╝"
+    echo ""
+
+    for REP in $(seq 1 $REPETICOES); do
+        echo ">>> Repetição $REP/$REPETICOES - Processos: $NP"
+        echo ""
+
+        #####################
+        # Dataset PEQUENO   #
+        #####################
+        echo " • PEQUENO (N=10,000, K=4)"
+
+        mpirun -np $NP ./src/MPI/kmeans_1d_mpi \
+            Geracao_dados/inputs/pequeno/dados.csv \
+            Geracao_dados/inputs/pequeno/centroides_iniciais.csv \
+            $MAX_ITER $EPS \
+            Resultados/MPI/assign_pequeno_p${NP}_r${REP}.csv \
+            Resultados/MPI/centroids_pequeno_p${NP}_r${REP}.csv \
+            Resultados/MPI/sse_pequeno_p${NP}_r${REP}.csv
+
+        #####################
+        # Dataset MÉDIO     #
+        #####################
+        echo " • MÉDIO (N=100,000, K=8)"
+
+        mpirun -np $NP ./src/MPI/kmeans_1d_mpi \
+            Geracao_dados/inputs/medio/dados.csv \
+            Geracao_dados/inputs/medio/centroides_iniciais.csv \
+            $MAX_ITER $EPS \
+            Resultados/MPI/assign_medio_p${NP}_r${REP}.csv \
+            Resultados/MPI/centroids_medio_p${NP}_r${REP}.csv \
+            Resultados/MPI/sse_medio_p${NP}_r${REP}.csv
+
+        #####################
+        # Dataset GRANDE    #
+        #####################
+        echo " • GRANDE (N=1,000,000, K=16)"
+
+        mpirun -np $NP ./src/MPI/kmeans_1d_mpi \
+            Geracao_dados/inputs/grande/dados.csv \
+            Geracao_dados/inputs/grande/centroides_iniciais.csv \
+            $MAX_ITER $EPS \
+            Resultados/MPI/assign_grande_p${NP}_r${REP}.csv \
+            Resultados/MPI/centroids_grande_p${NP}_r${REP}.csv \
+            Resultados/MPI/sse_grande_p${NP}_r${REP}.csv
+
+        echo ""
+    done
+
+    echo "----------------------------------------"
+    echo ""
+done
+
+echo "======================================"
+echo "✓ Execuções MPI concluídas!"
+echo "======================================"
+echo "Resultados salvos em: Resultados/MPI/"
+echo "CSV agregado deverá ser gerado pelo próprio kmeans_1d_mpi em Resultados/mpi.csv"
+echo ""
+
+if true; then
+
+###############################################################################
 #                               BLOCO CUDA                                    #
 ###############################################################################
 
@@ -209,7 +308,7 @@ for BLOCK_SIZE in "${CUDA_BLOCKS[@]}"; do
     echo ""
 
     # Compila a versão CUDA para este BLOCK_SIZE
-    nvcc -O2 -arch=sm_75 -DBLOCK_SIZE=$BLOCK_SIZE \
+    nvcc -O2 -DBLOCK_SIZE=$BLOCK_SIZE \
         src/CUDA/kmeans_1d_cuda.cu -o src/CUDA/kmeans_1d_cuda
 
     if [ $? -ne 0 ]; then
@@ -278,6 +377,7 @@ echo ""
 ###############################################################################
 #                               FIM BLOCO CUDA                                #
 ###############################################################################
+fi
 
 # Gera gráficos
 echo "======================================"

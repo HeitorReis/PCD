@@ -8,6 +8,7 @@ from glob import glob
 SEQUENCIAL_PATH = "Resultados/sequencial.csv"
 OMP_PATH = "Resultados/resultados.csv"
 CUDA_PATH = "Resultados/cuda.csv"
+MPI_PATH = "Resultados/mpi.csv"   # [MPI] CSV agregado da versão MPI
 
 OUT_DIR = "Resultados/Graficos"
 INPUTS_DIR = "Geracao_dados/inputs"
@@ -322,6 +323,179 @@ def plot_speedup_vs_blocksize(df_cuda, df_seq, out_dir=OUT_DIR):
     plt.grid(True, alpha=0.3)
     plt.legend(title="Tamanho (N)")
     out_path = os.path.join(out_dir, "speedup_vs_blocksize_cuda.png")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+    print(f"✓ Salvo: {out_path}")
+
+
+# ============================================================
+#            SPEEDUP / MÉTRICAS – MPI (CPU / DISTRIBUÍDO)
+# ============================================================
+
+def add_speedup_mpi(seq_path=SEQUENCIAL_PATH, mpi_path=MPI_PATH):
+    """
+    Lê sequencial.csv e mpi.csv, e acrescenta colunas:
+    - Speedup (Tempo_serial / Tempo_mpi)
+    - pontos/s (throughput usando o tempo MPI)
+
+    A lógica é análoga à de add_speedup (OpenMP), mas aplicada ao CSV do MPI.
+    """
+    if not os.path.exists(seq_path):
+        print(f"Arquivo não encontrado (serial): {seq_path}")
+        return 1
+
+    if not os.path.exists(mpi_path):
+        print(f"Arquivo não encontrado (MPI): {mpi_path}")
+        return 1
+
+    df_seq = pd.read_csv(seq_path)
+    df_mpi = pd.read_csv(mpi_path)
+
+    if 'Tamanho' not in df_seq.columns or 'Tempo(ms)' not in df_seq.columns:
+        print("sequencial.csv deve ter colunas: Tempo(ms), Tamanho, SSE_Final, Iteracoes")
+        return 1
+
+    if 'Tamanho' not in df_mpi.columns or 'Tempo(ms)' not in df_mpi.columns:
+        print("mpi.csv deve ter, no mínimo, colunas: Tempo(ms), Tamanho, SSE_Final, Iteracoes")
+        return 1
+
+    df_seq_agg = df_seq.groupby('Tamanho').agg({'Tempo(ms)': 'mean'}).reset_index()
+    df_seq_agg = df_seq_agg.rename(columns={'Tempo(ms)': 'Tempo_serial(ms)'})
+
+    df_merged = df_mpi.merge(df_seq_agg, on='Tamanho', how='left')
+    df_merged['Speedup'] = df_merged['Tempo_serial(ms)'] / df_merged['Tempo(ms)']
+
+    tempo_ms = df_merged['Tempo(ms)'].replace(0, np.nan)
+    df_merged['pontos/s'] = (df_merged['Tamanho'] * 1000.0) / tempo_ms
+
+    if 'Tempo_serial(ms)' in df_merged.columns:
+        df_merged = df_merged.drop(columns=['Tempo_serial(ms)'])
+
+    df_merged.to_csv(mpi_path, index=False)
+    print(f"✓ Speedup e 'pontos/s' adicionados em {mpi_path}")
+    return 0
+
+
+def _get_mpi_procs_column(df_mpi):
+    """
+    Tenta descobrir a coluna que representa o número de processos do MPI.
+    Aceita alguns nomes comuns para ser robusto à implementação:
+    - 'Procs', 'Processos', 'NP', 'NProcs', 'Threads' (se você resolveu reaproveitar).
+    """
+    candidates = ['Procs', 'Processos', 'NP', 'NProcs', 'Threads']
+    for c in candidates:
+        if c in df_mpi.columns:
+            return c
+    return None
+
+
+def plot_tempo_vs_procs_mpi(df_mpi, out_dir=OUT_DIR):
+    """
+    Tempo de execução vs número de processos (MPI) para diferentes tamanhos de entrada.
+    Estrutura análoga a plot_tempo_vs_threads, mas usando a coluna de processos.
+    """
+    ensure_dir(out_dir)
+
+    col_procs = _get_mpi_procs_column(df_mpi)
+    if col_procs is None:
+        print("Não foi encontrada coluna de número de processos em mpi.csv. "
+              "Esperado algo como 'Procs', 'Processos', 'NP', 'NProcs' ou 'Threads'. "
+              "Pulando gráfico Tempo vs Processos (MPI).")
+        return
+
+    plt.figure(figsize=(10, 6))
+    colors = plt.cm.cividis(np.linspace(0, 1, len(df_mpi['Tamanho'].unique())))
+
+    for i, N in enumerate(sorted(df_mpi['Tamanho'].unique())):
+        g = df_mpi[df_mpi['Tamanho'] == N].copy()
+
+        agg = g.groupby(col_procs).agg({
+            'Tempo(ms)': ['mean', 'std']
+        }).reset_index()
+        agg.columns = [col_procs, 'Tempo_mean', 'Tempo_std']
+        agg = agg.sort_values(col_procs)
+
+        if agg.empty:
+            continue
+
+        x = agg[col_procs].values
+        y_mean = agg['Tempo_mean'].values
+        y_std = agg['Tempo_std'].values
+
+        plt.errorbar(
+            x, y_mean, yerr=y_std,
+            marker='o', capsize=5, capthick=1.5,
+            label=f'N={N:,}',
+            color=colors[i]
+        )
+
+    plt.title("Tempo de Execução vs Número de Processos (MPI)")
+    plt.xlabel("Processos MPI")
+    plt.ylabel("Tempo (ms)")
+    plt.grid(True, alpha=0.3)
+    plt.legend(title="Tamanho (N)")
+    out_path = os.path.join(out_dir, "tempo_vs_procs_mpi.png")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+    print(f"✓ Salvo: {out_path}")
+
+
+def plot_speedup_vs_procs_mpi(df_mpi, df_seq, out_dir=OUT_DIR):
+    """
+    Speedup (Serial vs MPI) vs número de processos para diferentes tamanhos de entrada.
+    Estrutura análoga a plot_speedup_vs_threads.
+    """
+    ensure_dir(out_dir)
+
+    col_procs = _get_mpi_procs_column(df_mpi)
+    if col_procs is None:
+        print("Não foi encontrada coluna de número de processos em mpi.csv. "
+              "Pulando gráfico Speedup vs Processos (MPI).")
+        return
+
+    # Recalcula speedup se necessário
+    if 'Speedup' not in df_mpi.columns:
+        df_seq_agg = df_seq.groupby('Tamanho').agg({'Tempo(ms)': 'mean'}).reset_index()
+        df_seq_agg = df_seq_agg.rename(columns={'Tempo(ms)': 'Tempo_serial(ms)'})
+        df_merged = df_mpi.merge(df_seq_agg, on='Tamanho', how='left')
+        df_merged['Speedup'] = df_merged['Tempo_serial(ms)'] / df_merged['Tempo(ms)']
+    else:
+        df_merged = df_mpi.copy()
+
+    plt.figure(figsize=(10, 6))
+    colors = plt.cm.cividis(np.linspace(0, 1, len(df_merged['Tamanho'].unique())))
+
+    for i, N in enumerate(sorted(df_merged['Tamanho'].unique())):
+        g = df_merged[df_merged['Tamanho'] == N].copy()
+
+        agg = g.groupby(col_procs).agg({
+            'Speedup': ['mean', 'std']
+        }).reset_index()
+        agg.columns = [col_procs, 'Speedup_mean', 'Speedup_std']
+        agg = agg.sort_values(col_procs)
+
+        if agg.empty:
+            continue
+
+        x = agg[col_procs].values
+        y_mean = agg['Speedup_mean'].values
+        y_std = agg['Speedup_std'].values
+
+        plt.errorbar(
+            x, y_mean, yerr=y_std,
+            marker='o', capsize=5, capthick=1.5,
+            label=f'N={N:,}',
+            color=colors[i]
+        )
+
+    plt.title("Speedup (Serial vs MPI) vs Número de Processos")
+    plt.xlabel("Processos MPI")
+    plt.ylabel("Speedup")
+    plt.grid(True, alpha=0.3)
+    plt.legend(title="Tamanho (N)")
+    out_path = os.path.join(out_dir, "speedup_vs_procs_mpi.png")
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     plt.close()
@@ -768,12 +942,14 @@ def diagnosticar_hierarquia():
     print(f"- OMP_PATH: {OMP_PATH} -> {'ok' if os.path.exists(OMP_PATH) else 'não encontrado'}")
     print(f"- SEQUENCIAL_PATH: {SEQUENCIAL_PATH} -> {'ok' if os.path.exists(SEQUENCIAL_PATH) else 'não encontrado'}")
     print(f"- CUDA_PATH: {CUDA_PATH} -> {'ok' if os.path.exists(CUDA_PATH) else 'não encontrado'}")
+    print(f"- MPI_PATH: {MPI_PATH} -> {'ok' if os.path.exists(MPI_PATH) else 'não encontrado'}")
 
     inputs = sorted(glob(os.path.join(INPUTS_DIR, "*.*")))
     cents = sorted(glob(os.path.join(CENTROIDS_DIR, "centroids_*.*")))
     sse_serial = sorted(glob(os.path.join("Resultados", "Original", "sse_*.csv")))
     sse_omp = sorted(glob(os.path.join("Resultados", "OpenMP", "sse_*.csv")))
     sse_cuda = sorted(glob(os.path.join("Resultados", "CUDA", "sse_*.csv")))
+    sse_mpi = sorted(glob(os.path.join("Resultados", "MPI", "sse_*.csv")))
 
     def _preview(lst, maxn=8):
         if not lst:
@@ -787,6 +963,7 @@ def diagnosticar_hierarquia():
     print(f"- SSE serial (Resultados/Original): {_preview(sse_serial)}")
     print(f"- SSE OpenMP (Resultados/OpenMP): {_preview(sse_omp)}")
     print(f"- SSE CUDA (Resultados/CUDA): {_preview(sse_cuda)}")
+    print(f"- SSE MPI (Resultados/MPI): {_preview(sse_mpi)}")
     print("=== Fim do diagnóstico ===\n")
 
 
@@ -812,7 +989,8 @@ def main():
         plot_tempo_vs_threads(df_omp, OUT_DIR)
         plot_speedup_vs_threads(df_omp, df_seq, OUT_DIR)
     else:
-        print("Resultados OpenMP não encontrados (Resultados/resultados.csv ou Resultados/sequencial.csv). Pulando gráficos de performance OpenMP.")
+        print("Resultados OpenMP não encontrados (Resultados/resultados.csv ou Resultados/sequencial.csv). "
+              "Pulando gráficos de performance OpenMP.")
 
     # 1b) Performance CUDA (GPU)
     have_cuda = os.path.exists(CUDA_PATH) and os.path.exists(SEQUENCIAL_PATH)
@@ -834,7 +1012,27 @@ def main():
     else:
         print("Resultados CUDA não encontrados (Resultados/cuda.csv). Pulando gráficos de performance CUDA.")
 
-    # 2) SSE por iteração (validação)
+    # 1c) Performance MPI (CPU distribuído)
+    have_mpi = os.path.exists(MPI_PATH) and os.path.exists(SEQUENCIAL_PATH)
+    if have_mpi:
+        print("\n" + "=" * 60)
+        print("Calculando Speedup (Serial vs MPI)...")
+        print("=" * 60)
+        add_speedup_mpi(SEQUENCIAL_PATH, MPI_PATH)
+
+        df_mpi = pd.read_csv(MPI_PATH)
+        df_seq_mpi = pd.read_csv(SEQUENCIAL_PATH)
+
+        print("\n" + "=" * 60)
+        print("Gerando gráficos de performance (MPI)...")
+        print("=" * 60 + "\n")
+
+        plot_tempo_vs_procs_mpi(df_mpi, OUT_DIR)
+        plot_speedup_vs_procs_mpi(df_mpi, df_seq_mpi, OUT_DIR)
+    else:
+        print("Resultados MPI não encontrados (Resultados/mpi.csv). Pulando gráficos de performance MPI.")
+
+    # 2) SSE por iteração (validação Serial vs OpenMP)
     plot_sse_validacao(labels=('pequeno', 'medio', 'grande'),
                        threads_ref=4,
                        out_dir=OUT_DIR)
