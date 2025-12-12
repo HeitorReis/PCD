@@ -701,6 +701,94 @@ def plot_sse_validacao_cuda(labels=('pequeno', 'medio', 'grande'),
         plt.close()
         print("Nenhum gráfico de SSE (Serial vs CUDA) foi gerado (arquivos não encontrados).")
 
+def plot_sse_mpi(labels=('pequeno', 'medio', 'grande'),
+                 procs_ref=8,
+                 out_dir=OUT_DIR):
+    """
+    Plota SSE por iteração comparando Serial vs MPI.
+    Usa a última repetição disponível para um número fixo de processos (procs_ref).
+    """
+    ensure_dir(out_dir)
+
+    serial_dir = "Resultados/Original"
+    mpi_dir = "Resultados/MPI"
+
+    plt.figure(figsize=(12, 7))
+    any_plotted = False
+
+    # Mesma paleta/base do restante
+    colors = {
+        'pequeno': ('#E15759', '#4E79A7'),
+        'medio':   ('#59A14F', '#FF9DA7'),
+        'grande':  ('#76B7B2', '#F28E2B')
+    }
+
+    for lbl in labels:
+        # Serial
+        serial_pattern = os.path.join(serial_dir, f"sse_{lbl}_r*.csv")
+        serial_files = sorted(glob(serial_pattern))
+        serial_path = serial_files[-1] if serial_files else None
+
+        # MPI com procs_ref
+        mpi_pattern = os.path.join(mpi_dir, f"sse_{lbl}_p{procs_ref}_r*.csv")
+        mpi_files = sorted(mpi_pattern and glob(mpi_pattern) or [])
+        mpi_path = mpi_files[-1] if mpi_files else None
+
+        if not serial_path and not mpi_path:
+            print(f"SSE não encontrado para '{lbl}' (Serial/MPI).")
+            print(f" Serial: {serial_pattern}")
+            print(f" MPI   : {mpi_pattern}")
+            continue
+
+        sse_serial = _read_sse_series(serial_path) if serial_path else None
+        sse_mpi = _read_sse_series(mpi_path) if mpi_path else None
+
+        if sse_serial is None and sse_mpi is None:
+            print(f"Falha ao ler SSE para '{lbl}' (Serial/MPI). Pulando.")
+            continue
+
+        any_plotted = True
+
+        if sse_serial is not None:
+            it_serial = np.arange(1, len(sse_serial) + 1)
+            plt.plot(
+                it_serial,
+                sse_serial,
+                label=f"{lbl} - Serial",
+                linestyle='-',
+                lw=2,
+                color=colors.get(lbl, ('black', 'gray'))[0],
+                alpha=0.9
+            )
+
+        if sse_mpi is not None:
+            it_mpi = np.arange(1, len(sse_mpi) + 1)
+            plt.plot(
+                it_mpi,
+                sse_mpi,
+                label=f"{lbl} - MPI (P={procs_ref})",
+                linestyle='--',
+                lw=2,
+                color=colors.get(lbl, ('black', 'gray'))[1],
+                alpha=0.9
+            )
+
+    if any_plotted:
+        plt.title("Convergência do SSE (Serial vs MPI)", fontsize=14, fontweight='bold')
+        plt.xlabel("Iteração", fontsize=12)
+        plt.ylabel("SSE (escala log)", fontsize=12)
+        plt.grid(True, alpha=0.3, linestyle=':', linewidth=0.7)
+        plt.legend(loc='best', framealpha=0.95, fontsize=10)
+        plt.yscale('log')
+        out_path = os.path.join(out_dir, "sse_por_iteracao_mpi.png")
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=150)
+        plt.close()
+        print(f"✓ Salvo: {out_path}")
+    else:
+        plt.close()
+        print("Nenhum gráfico de SSE (MPI) gerado (arquivos não encontrados).")
+
 
 # ============================================================
 #          AUXILIARES PARA DISTRIBUIÇÃO E CENTRÓIDES
@@ -1041,6 +1129,11 @@ def main():
     plot_sse_validacao_cuda(labels=('pequeno', 'medio', 'grande'),
                             blocksize_ref=256,
                             out_dir=OUT_DIR)
+
+    # 2c) SSE por iteração (Serial vs MPI) – número de processos de referência
+    plot_sse_mpi(labels=('pequeno', 'medio', 'grande'),
+                 procs_ref=8,      # ajuste para o P que você quer destacar
+                 out_dir=OUT_DIR)
 
     # 3) Distribuição (1D) + centróides finais
     print("\nGerando distribuições com centróides a partir de Geracao_dados/inputs e Resultados/Original/centroids_* ...\n")

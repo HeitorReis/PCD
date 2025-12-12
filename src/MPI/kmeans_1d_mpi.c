@@ -98,14 +98,23 @@ static void write_sse_series_csv(const char *path, const double *sse_history, in
     fclose(f);
 }
 
-/* ---------- Função para verificar se arquivo existe ---------- */
+/* ---------- util: checar se arquivo existe ---------- */
 static int file_exists(const char *path){
     struct stat buffer;
     return (stat(path, &buffer) == 0);
 }
 
-/* ---------- Função para append dos resultados ---------- */
-static void append_results_csv(const char *path, double tempo_ms, int tamanho, double sse, int iteracoes){
+/* ---------- append de resultados (MPI)
+   [ALTERAÇÃO-MPI]
+   - Acrescenta coluna 'Procs' com o número de processos MPI.
+   - Mantém o padrão de CSV usado pela versão sequencial, apenas expandindo. */
+static void append_results_csv(const char *path,
+                               double tempo_ms,
+                               int tamanho,
+                               double sse,
+                               int iteracoes,
+                               int procs)   /* novo parâmetro */
+{
     int write_header = !file_exists(path);
     
     FILE *f = fopen(path, "a");
@@ -115,13 +124,14 @@ static void append_results_csv(const char *path, double tempo_ms, int tamanho, d
     }
     
     if(write_header){
-        fprintf(f, "Tempo(ms),Tamanho,SSE_Final,Iteracoes\n");
+        fprintf(f, "Tempo(ms),Tamanho,SSE_Final,Iteracoes,Procs\n");
     }
-    fprintf(f, "%.3f,%d,%.6f,%d\n", tempo_ms, tamanho, sse, iteracoes);
+    fprintf(f, "%.3f,%d,%.6f,%d,%d\n",
+            tempo_ms, tamanho, sse, iteracoes, procs);
     fclose(f);
 }
 
-/* ---------- k-means 1D (versão sequencial original) ---------- */
+/* ---------- k-means 1D (sequencial original) ---------- */
 static double assignment_step_1d(const double *X, const double *C,
                                  int *assign, int N, int K){
     double sse = 0.0;
@@ -181,12 +191,11 @@ static void kmeans_1d(const double *X, double *C, int *assign,
 }
 
 /* ---------- k-means 1D versão MPI ---------- */
-/* [MPI] Esta função replica a lógica de kmeans_1d, mas:
-   - distribui os pontos entre os processos por intervalo de índices;
-   - calcula assignment e somatórios localmente;
-   - usa MPI_Reduce e MPI_Allreduce para obter SSE_global e somas globais;
-   - mantém o mesmo critério de parada da versão sequencial.
-*/
+/* [MPI] Replica a lógica de kmeans_1d:
+   - distribui pontos por intervalo de índices;
+   - faz assignment / somas localmente;
+   - usa reduções para SSE e somatórios;
+   - critério de parada igual ao sequencial. */
 static void kmeans_1d_mpi(const double *X, double *C, int *assign,
                           int N, int K, int max_iter, double eps,
                           int *iters_out, double *sse_out,
@@ -197,7 +206,7 @@ static void kmeans_1d_mpi(const double *X, double *C, int *assign,
     double sse_global = 0.0;
     int it;
 
-    /* [MPI] Cálculo do intervalo de pontos de cada processo */
+    /* [MPI] intervalo de pontos por processo */
     int base = N / size;
     int rem  = N % size;
 
@@ -209,10 +218,7 @@ static void kmeans_1d_mpi(const double *X, double *C, int *assign,
         start = rank * base + rem;
         end   = start + base;
     }
-    int local_N = end - start;
-    (void)local_N; /* só para evitar warning se não usamos explicitamente */
 
-    /* [MPI] Vetores locais e globais para somas e contagens */
     double *sum_local  = (double*)calloc((size_t)K, sizeof(double));
     double *sum_global = (double*)calloc((size_t)K, sizeof(double));
     int    *cnt_local  = (int*)calloc((size_t)K, sizeof(int));
@@ -223,7 +229,7 @@ static void kmeans_1d_mpi(const double *X, double *C, int *assign,
     }
 
     for(it=0; it<max_iter; it++){
-        /* Zera acumuladores locais a cada iteração */
+        /* zera acumuladores locais */
         for(int c=0; c<K; c++){
             sum_local[c] = 0.0;
             cnt_local[c] = 0;
@@ -231,7 +237,7 @@ static void kmeans_1d_mpi(const double *X, double *C, int *assign,
 
         double sse_local = 0.0;
 
-        /* [MPI] 1) Assignment local + somatórios locais */
+        /* [MPI] 1) assignment local + somatórios locais */
         for(int i = start; i < end; i++){
             int best = -1;
             double bestd = 1e300;
@@ -251,11 +257,11 @@ static void kmeans_1d_mpi(const double *X, double *C, int *assign,
             cnt_local[best] += 1;
         }
 
-        /* [MPI] 2) Redução de SSE para o processo 0 */
+        /* [MPI] 2) redução de SSE no rank 0 */
         MPI_Reduce(&sse_local, &sse_global, 1,
                    MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
-        /* [MPI] 3) Somatórios globais para todos (Allreduce) */
+        /* [MPI] 3) somatórios globais para todos */
         MPI_Allreduce(sum_local,  sum_global,  K, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(cnt_local,  cnt_global,  K, MPI_INT,    MPI_SUM, MPI_COMM_WORLD);
 
@@ -271,13 +277,10 @@ static void kmeans_1d_mpi(const double *X, double *C, int *assign,
             }
         }
 
-        /* [MPI] 4) Broadcast do flag de parada */
+        /* [MPI] 4) broadcast do flag de parada */
         MPI_Bcast(&stop, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
         if(stop){
-            /* Mesmo comportamento da versão sequencial:
-               - não atualiza centróides na última iteração que dispara o critério;
-               - it conta esta iteração. */
             if(rank == 0){
                 *iters_out = it + 1;
                 *sse_out   = sse_global;
@@ -285,32 +288,38 @@ static void kmeans_1d_mpi(const double *X, double *C, int *assign,
             break;
         }
 
-        /* [MPI] 5) Atualização dos centróides com somas globais */
+        /* [MPI] 5) atualização de centróides com somas globais (apenas rank 0) */
         if(rank == 0){
             for(int c=0; c<K; c++){
                 if(cnt_global[c] > 0)
                     C[c] = sum_global[c] / (double)cnt_global[c];
                 else
-                    C[c] = X[0];  /* mesma estratégia naive do sequencial */
+                    C[c] = X[0];
             }
             prev_sse = sse_global;
         }
 
-        /* [MPI] 6) Broadcast dos centróides atualizados e prev_sse */
-        MPI_Bcast(C,       K, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        /* [MPI] 6) broadcast dos centróides atualizados + prev_sse */
+        MPI_Bcast(C,         K, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Bcast(&prev_sse, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
 
-    /* Se saiu porque atingiu max_iter sem convergência, garante saída coerente */
     if(it == max_iter){
         if(rank == 0){
-            /* sse_global guarda o SSE da última iteração realizada */
             *iters_out = max_iter;
             *sse_out   = sse_global;
         }
     }
 
-    /* [MPI] Broadcast dos resultados finais para todos (caso alguém queira usar) */
+    /* [ALTERAÇÃO-MPI]
+       Aqui, cada rank tem apenas parte de 'assign'. Para garantir que o rank 0
+       escreva um CSV idêntico ao sequencial, recomputamos o assignment global
+       apenas no rank 0, usando os centróides finais. O custo é O(N*K) uma vez. */
+    if(rank == 0){
+        assignment_step_1d(X, C, assign, N, K);
+    }
+
+    /* broadcast de iters/sse (caso seja útil em outros ranks) */
     MPI_Bcast(iters_out, 1, MPI_INT,    0, MPI_COMM_WORLD);
     MPI_Bcast(sse_out,   1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
@@ -324,7 +333,7 @@ static void kmeans_1d_mpi(const double *X, double *C, int *assign,
 int main(int argc, char **argv){
     int rank = 0, size = 1;
 
-    /* [MPI] Inicialização do MPI e descoberta de rank/size */
+    /* [MPI] inicialização */
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -360,17 +369,15 @@ int main(int argc, char **argv){
     double *X = NULL;
     double *C = NULL;
 
-    /* [MPI] Apenas rank 0 le os arquivos; depois faremos broadcast */
+    /* [MPI] rank 0 lê arquivos; depois broadcast */
     if(rank == 0){
         X = read_csv_1col(pathX, &N);
         C = read_csv_1col(pathC, &K);
     }
 
-    /* [MPI] Broadcast de N e K para todos */
     MPI_Bcast(&N, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&K, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-    /* [MPI] Alocacao dos vetores X e C nos demais ranks */
     if(rank != 0){
         X = (double*)malloc((size_t)N * sizeof(double));
         C = (double*)malloc((size_t)K * sizeof(double));
@@ -380,7 +387,6 @@ int main(int argc, char **argv){
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-    /* [MPI] Broadcast dos dados X e C a partir do rank 0 */
     MPI_Bcast(X, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Bcast(C, K, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
@@ -390,7 +396,6 @@ int main(int argc, char **argv){
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-    /* [MPI] sse_history somente no rank 0 (quem grava o CSV) */
     double *sse_history = NULL;
     if(rank == 0){
         sse_history = (double*)malloc((size_t)max_iter * sizeof(double));
@@ -400,17 +405,16 @@ int main(int argc, char **argv){
         }
     }
 
-    /* [MPI] Medida de tempo com MPI_Wtime (tempo de parede) */
     double t0 = MPI_Wtime();
 
     int iters = 0;
     double sse = 0.0;
 
     if(size == 1){
-        /* [MPI] Caso trivial: 1 processo -> usa versao sequencial original. */
+        /* 1 processo -> sequencial */
         kmeans_1d(X, C, assign, N, K, max_iter, eps, &iters, &sse, sse_history);
     } else {
-        /* [MPI] Versao paralela: distribui pontos entre os processos. */
+        /* versão paralela */
         kmeans_1d_mpi(X, C, assign, N, K, max_iter, eps,
                       &iters, &sse, sse_history, rank, size);
     }
@@ -423,13 +427,12 @@ int main(int argc, char **argv){
         printf("N=%d K=%d max_iter=%d eps=%g P=%d\n", N, K, max_iter, eps, size);
         printf("Iteracoes: %d | SSE final: %.6f | Tempo: %.1f ms\n", iters, sse, ms);
 
-        /* [MPI] Escrita dos arquivos de saida apenas no rank 0 */
         write_assign_csv(outAssign, assign, N);
         write_centroids_csv(outCentroid, C, K);
         write_sse_series_csv(outSSE, sse_history, iters);
 
-        /* [MPI] Guarda resultados em arquivo separado da versao sequencial */
-        append_results_csv("Resultados/mpi.csv", ms, N, sse, iters);
+        /* [MPI] registra resultados em CSV próprio da versão MPI */
+        append_results_csv("Resultados/mpi.csv", ms, N, sse, iters, size);
     }
 
     free(assign);

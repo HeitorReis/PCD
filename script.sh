@@ -92,6 +92,11 @@ echo "✓ Execuções Serial concluídas!"
 echo "======================================"
 echo ""
 
+if true; then
+###############################################################################
+#                             BLOCO OPENMP                                    #
+###############################################################################
+
 # Compilação OpenMP
 echo "======================================"
 echo "Compilando kmeans_1d_omp..."
@@ -180,6 +185,12 @@ echo "======================================"
 echo "Resultados salvos em: Resultados/OpenMP/"
 echo ""
 
+###############################################################################
+#                           FIM BLOCO OPENMP                                  #
+###############################################################################
+fi
+
+if true; then
 ###############################################################################
 #                               BLOCO MPI                                     #
 ###############################################################################
@@ -275,9 +286,9 @@ echo "======================================"
 echo "Resultados salvos em: Resultados/MPI/"
 echo "CSV agregado deverá ser gerado pelo próprio kmeans_1d_mpi em Resultados/mpi.csv"
 echo ""
+fi
 
 if true; then
-
 ###############################################################################
 #                               BLOCO CUDA                                    #
 ###############################################################################
@@ -308,7 +319,7 @@ for BLOCK_SIZE in "${CUDA_BLOCKS[@]}"; do
     echo ""
 
     # Compila a versão CUDA para este BLOCK_SIZE
-    nvcc -O2 -DBLOCK_SIZE=$BLOCK_SIZE \
+    nvcc -O2 -arch=sm_86 -DBLOCK_SIZE=$BLOCK_SIZE \
         src/CUDA/kmeans_1d_cuda.cu -o src/CUDA/kmeans_1d_cuda
 
     if [ $? -ne 0 ]; then
